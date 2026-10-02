@@ -44,7 +44,7 @@ func (c *Client) Recover(ctx context.Context, r io.Reader, filename string, size
 	}
 	total := int64(len(head)) + size + int64(len(tail))
 	body := io.MultiReader(bytes.NewReader(head), r, bytes.NewReader(tail))
-	return c.send(ctx, http.MethodPost, "/api/v2/recover", contentType, body, total, nil)
+	return c.send(ctx, http.MethodPost, "/api/v2/recover", nil, contentType, body, total, nil)
 }
 
 // Reboot asks the player to reboot.
@@ -55,4 +55,36 @@ func (c *Client) Reboot(ctx context.Context) error {
 // Shutdown asks the player to shut down.
 func (c *Client) Shutdown(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/api/v2/shutdown", nil, nil)
+}
+
+// SetDisplayPower turns the attached display on or off over HDMI-CEC and
+// returns the player's status message. Experimental on the player side.
+// Errors are [*APIError]s: 503 when the player has no CEC adapter, 502 when
+// the display did not respond; [APIError.Message] holds the reason.
+func (c *Client) SetDisplayPower(ctx context.Context, on bool) (string, error) {
+	state := "off"
+	if on {
+		state = "on"
+	}
+	var out struct {
+		Message string `json:"message"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/v2/display/"+state, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Message, nil
+}
+
+// GetIPAddresses returns the player's addresses as URLs (e.g.
+// "http://10.0.0.108"), as shown on its splash screen; empty while the
+// player has no address yet. Unlike [Client.GetInfo] this endpoint needs
+// no credentials and is cheap enough to poll.
+func (c *Client) GetIPAddresses(ctx context.Context) ([]string, error) {
+	var out struct {
+		IPAddresses []string `json:"ip_addresses"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v2/network/ip-addresses", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.IPAddresses, nil
 }

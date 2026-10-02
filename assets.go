@@ -59,8 +59,9 @@ func (c *Client) UpdateAsset(ctx context.Context, assetID string, req UpdateAsse
 	return &a, nil
 }
 
-// ReplaceAsset replaces an asset (full update).
-func (c *Client) ReplaceAsset(ctx context.Context, assetID string, req CreateAssetRequest) (*Asset, error) {
+// ReplaceAsset replaces an asset's editable fields (full update). The
+// asset's uri and mimetype are fixed at creation.
+func (c *Client) ReplaceAsset(ctx context.Context, assetID string, req ReplaceAssetRequest) (*Asset, error) {
 	var a Asset
 	if err := c.do(ctx, http.MethodPut, "/api/v2/assets/"+url.PathEscape(assetID), req, &a); err != nil {
 		return nil, err
@@ -79,7 +80,7 @@ func (c *Client) SetPlaylistOrder(ctx context.Context, assetIDs []string) error 
 	form := url.Values{}
 	form.Set("ids", strings.Join(assetIDs, ","))
 	body := form.Encode()
-	return c.send(ctx, http.MethodPost, "/api/v2/assets/order",
+	return c.send(ctx, http.MethodPost, "/api/v2/assets/order", nil,
 		"application/x-www-form-urlencoded", strings.NewReader(body), int64(len(body)), nil)
 }
 

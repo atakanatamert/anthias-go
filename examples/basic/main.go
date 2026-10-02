@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"os"
 	"time"
 
@@ -33,21 +37,27 @@ func main() {
 		panic(err)
 	}
 
-	data := []byte("Hello from anthias-go\n")
-	upload, err := client.UploadFileReader(ctx, bytes.NewReader(data), "hello.txt", int64(len(data)))
+	// The player only accepts image and video uploads; render a small PNG.
+	img := image.NewRGBA(image.Rect(0, 0, 640, 360))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 0x27, B: 0x35, A: 0xff}}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	upload, err := client.UploadFileReader(ctx, bytes.NewReader(buf.Bytes()), "hello.png", int64(buf.Len()))
 	if err != nil {
 		panic(err)
 	}
 
 	now := time.Now().UTC()
 	asset, err := client.CreateAsset(ctx, anthias.CreateAssetRequest{
-		Name:      "hello.txt",
+		Name:      "hello.png",
 		URI:       upload.URI,
 		Ext:       upload.Ext,
 		StartDate: now,
 		EndDate:   now.Add(24 * time.Hour),
 		Duration:  10,
-		Mimetype:  "text/plain; charset=utf-8",
+		Mimetype:  "image",
 		IsEnabled: true,
 	})
 	if err != nil {

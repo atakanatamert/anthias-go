@@ -13,13 +13,18 @@ const testUA = "anthias-go-test"
 
 func newTestClient(t *testing.T, h http.Handler) *Client {
 	t.Helper()
+	return newTestClientOpts(t, h)
+}
+
+func newTestClientOpts(t *testing.T, h http.Handler, opts ...Option) *Client {
+	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	c, err := New(srv.URL,
+	c, err := New(srv.URL, append([]Option{
 		WithBasicAuth("user", "pass"),
 		WithUserAgent(testUA),
-	)
+	}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +116,65 @@ func TestContextCancellation(t *testing.T) {
 	_, err := c.ListAssets(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// With auth enabled, Anthias redirects unauthenticated API calls to its HTML
+// login page. Following that redirect turned writes into silent successes.
+func TestLoginRedirectIsUnauthorizedError(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login/" {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<html>login</html>"))
+			return
+		}
+		http.Redirect(w, r, "/login/?next="+r.URL.Path, http.StatusFound)
+	}))
+
+	err := c.DeleteAsset(context.Background(), "asset-1")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("DeleteAsset error = %v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusFound || !apiErr.IsUnauthorized() {
+		t.Fatalf("APIError = %+v, want 302 with IsUnauthorized", apiErr)
+	}
+	if _, err := c.ListAssets(context.Background()); !errors.As(err, &apiErr) || !apiErr.IsUnauthorized() {
+		t.Fatalf("ListAssets error = %v, want unauthorized *APIError", err)
+	}
+}
+
+func TestIsUnauthorized(t *testing.T) {
+	cases := []struct {
+		err  APIError
+		want bool
+	}{
+		{APIError{StatusCode: http.StatusUnauthorized}, true},
+		{APIError{StatusCode: http.StatusFound, Location: "/login/?next=/api/v2/info"}, true},
+		{APIError{StatusCode: http.StatusMovedPermanently, Location: "/api/v2/assets/"}, false},
+		{APIError{StatusCode: http.StatusForbidden}, false},
+		{APIError{StatusCode: http.StatusNotFound}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.err.IsUnauthorized(); got != tc.want {
+			t.Errorf("IsUnauthorized(%d %q) = %v, want %v", tc.err.StatusCode, tc.err.Location, got, tc.want)
+		}
+	}
+}
+
+func TestAPIErrorMessage(t *testing.T) {
+	cases := map[string]string{
+		`{"message":"No HDMI-CEC adapter detected on this device."}`: "No HDMI-CEC adapter detected on this device.",
+		`{"valid":false,"error":"Could not reach Screenly."}`:        "Could not reach Screenly.",
+		`{"detail":"No Asset matches the given query."}`:             "No Asset matches the given query.",
+		`{"success":false,"asset_id":null,"error":null}`:             "",
+		`{"play_time_to":["must be set together"]}`:                  "",
+		`<html>login</html>`: "",
+	}
+	for body, want := range cases {
+		e := &APIError{Body: []byte(body)}
+		if got := e.Message(); got != want {
+			t.Errorf("Message(%s) = %q, want %q", body, got, want)
+		}
 	}
 }

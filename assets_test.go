@@ -98,11 +98,11 @@ func TestAssetWriteBodies(t *testing.T) {
 			writeJSON(t, w, http.StatusOK, testAsset("asset-1"))
 		case 2:
 			assertMethodPath(t, r, http.MethodPut, "/api/v2/assets/asset-1")
-			var got CreateAssetRequest
+			var got map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 				t.Fatal(err)
 			}
-			if got.URI != "https://example.com/replacement.png" || got.Duration != 20 {
+			if got["name"] != "Replaced" || got["duration"] != float64(20) {
 				t.Fatalf("replace body = %#v", got)
 			}
 			writeJSON(t, w, http.StatusOK, testAsset("asset-1"))
@@ -133,9 +133,13 @@ func TestAssetWriteBodies(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	replaceReq := createReq
-	replaceReq.URI = "https://example.com/replacement.png"
-	replaceReq.Duration = 20
+	replaceReq := ReplaceAssetRequest{
+		Name:      "Replaced",
+		StartDate: testStart,
+		EndDate:   testEnd,
+		Duration:  20,
+		IsEnabled: true,
+	}
 	if _, err := c.ReplaceAsset(context.Background(), "asset-1", replaceReq); err != nil {
 		t.Fatal(err)
 	}
@@ -202,5 +206,54 @@ func TestAssetActions(t *testing.T) {
 	}
 	if calls != 4 {
 		t.Fatalf("calls = %d, want 4", calls)
+	}
+}
+
+func TestUpdateAssetRequestClearFlags(t *testing.T) {
+	b, err := json.Marshal(UpdateAssetRequest{
+		Name:                Ptr("Menu"),
+		ClearPlayTimeWindow: true,
+		ClearCustomHeaders:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"name":           `"Menu"`,
+		"play_time_from": "null",
+		"play_time_to":   "null",
+		"custom_headers": "{}",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("body = %s, want exactly %v", b, want)
+	}
+	for k, v := range want {
+		if string(got[k]) != v {
+			t.Fatalf("%s = %s, want %s (body %s)", k, got[k], v, b)
+		}
+	}
+
+	// Without flags, unset fields stay omitted so PATCH leaves them alone.
+	b, err = json.Marshal(UpdateAssetRequest{Name: Ptr("Menu")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"name":"Menu"}` {
+		t.Fatalf("body = %s", b)
+	}
+}
+
+func TestUpdateAssetRequestClearConflicts(t *testing.T) {
+	for name, req := range map[string]UpdateAssetRequest{
+		"time window": {ClearPlayTimeWindow: true, PlayTimeFrom: Ptr("08:00")},
+		"headers":     {ClearCustomHeaders: true, CustomHeaders: map[string]string{"X-A": "1"}},
+	} {
+		if _, err := json.Marshal(req); err == nil {
+			t.Errorf("%s: conflicting request marshaled without error", name)
+		}
 	}
 }

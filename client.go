@@ -12,7 +12,7 @@ import (
 )
 
 // Version is the current SDK version.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 const (
 	maxErrorBody  = 64 * 1024
@@ -22,11 +22,12 @@ const (
 
 // Client is an Anthias v2 API client. Construct one with [New].
 type Client struct {
-	baseURL   string
-	httpc     *http.Client
-	username  string
-	password  string
-	userAgent string
+	baseURL       string
+	httpc         *http.Client
+	username      string
+	password      string
+	userAgent     string
+	internalToken string
 }
 
 // Option configures a [Client].
@@ -56,9 +57,28 @@ func WithUserAgent(ua string) Option {
 	return func(c *Client) { c.userAgent = ua }
 }
 
+// WithInternalSecret enables the player-internal endpoints
+// ([Client.GetViewerPlaylist], [Client.GetViewerSettings],
+// [Client.RecheckAsset]). secret is the player's `django_secret_key` from
+// ~/.anthias/anthias.conf on the device, or the value of the
+// ANTHIAS_INTERNAL_TOKEN environment variable if the player sets it. The
+// derived token is sent only on internal endpoint requests. Anthias builds
+// these endpoints for its own viewer, so they may change between player
+// releases with less notice than the operator API. Treat the secret like a
+// password: it also signs the player's sessions.
+func WithInternalSecret(secret string) Option {
+	return func(c *Client) { c.internalToken = internalToken(secret) }
+}
+
 // New creates a Client for the player at baseURL. baseURL must include a
 // scheme (e.g. "http://192.168.1.50" or "http://player.local:8080"); a
 // trailing slash is trimmed.
+//
+// The client never follows redirects: when authentication is enabled on the
+// player, an unauthenticated request is answered with a redirect to the HTML
+// login page, which is reported as an [*APIError] (see
+// [APIError.IsUnauthorized]) instead of being followed. A client passed via
+// [WithHTTPClient] is copied, not modified.
 func New(baseURL string, opts ...Option) (*Client, error) {
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		return nil, errors.New("anthias: baseURL must include a scheme (http:// or https://)")
@@ -71,6 +91,9 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(c)
 	}
+	hc := *c.httpc
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	c.httpc = &hc
 	return c, nil
 }
 
@@ -78,22 +101,26 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 // non-nil). Non-2xx responses become *APIError.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	if body == nil {
-		return c.send(ctx, method, path, "", nil, -1, out)
+		return c.send(ctx, method, path, nil, "", nil, -1, out)
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	return c.send(ctx, method, path, "application/json", bytes.NewReader(buf), int64(len(buf)), out)
+	return c.send(ctx, method, path, nil, "application/json", bytes.NewReader(buf), int64(len(buf)), out)
 }
 
-// send is the low-level request helper. body may be nil; contentLength of -1
-// leaves Content-Length unset. Non-2xx responses become *APIError with the
-// body capped at maxErrorBody bytes.
-func (c *Client) send(ctx context.Context, method, path, contentType string, body io.Reader, contentLength int64, out any) error {
+// send is the low-level request helper. hdr adds request headers and may be
+// nil; body may be nil; contentLength of -1 leaves Content-Length unset.
+// Non-2xx responses become *APIError with the body capped at maxErrorBody
+// bytes.
+func (c *Client) send(ctx context.Context, method, path string, hdr http.Header, contentType string, body io.Reader, contentLength int64, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return err
+	}
+	for k, v := range hdr {
+		req.Header[k] = v
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -120,6 +147,7 @@ func (c *Client) send(ctx context.Context, method, path, contentType string, bod
 			StatusCode: resp.StatusCode,
 			Method:     method,
 			URL:        path,
+			Location:   resp.Header.Get("Location"),
 			Body:       errBody,
 		}
 	}
